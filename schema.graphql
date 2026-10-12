@@ -1,0 +1,161 @@
+# OPINION (opinion.trade) prediction market on BNB Chain.
+# Collateral is BSC USDT (18 decimals). All *Raw fields are raw 18-dp integers;
+# the matching BigDecimal fields are scaled to whole USDT / whole shares.
+
+"A binary market = one CTF condition prepared on OPINION's ConditionalTokens."
+type Market @entity(immutable: false) {
+  id: Bytes!                        # conditionId (same as Open API conditionId)
+  "On-chain question id (Open API questionId). Open API marketId is off-chain and not on-chain."
+  questionId: Bytes!
+  oracle: Bytes!
+  outcomeSlotCount: Int!
+  "Outcome token ids (ERC1155 position ids). YES = outcome index 0 (indexSet 1), NO = index 1 — same ids as the Open API yesTokenId/noTokenId."
+  yesTokenId: BigInt
+  noTokenId: BigInt
+  tokens: [OutcomeToken!]! @derivedFrom(field: "market")
+  resolved: Boolean!
+  payoutNumerators: [BigInt!]
+  payoutDenominator: BigInt
+  resolvedAtTimestamp: BigInt
+  "Matched volume in USDT, each match counted once (maker-side fills)."
+  volume: BigDecimal!
+  sharesVolume: BigDecimal!
+  tradeCount: BigInt!
+  "Collateral locked in this market: splits - merges - redemptions (USDT)."
+  openInterest: BigDecimal!
+  openInterestRaw: BigInt!
+  "Last traded YES price (0..1)."
+  lastYesPrice: BigDecimal!
+  lastTradeTimestamp: BigInt!
+  createdAtBlock: BigInt!
+  createdAtTimestamp: BigInt!
+}
+
+"Maps an ERC1155 outcome token id to its market."
+type OutcomeToken @entity(immutable: true) {
+  id: Bytes!                        # tokenId as 32 bytes
+  tokenId: BigInt!
+  market: Market!
+  outcomeIndex: Int!                # 0 = YES, 1 = NO
+}
+
+"One OrderFilled event. Each match emits one fill per maker order plus one for the taker order (taker = exchange)."
+type Trade @entity(immutable: true) {
+  id: Bytes!                        # txHash ++ logIndex
+  market: Market!
+  tokenId: BigInt!
+  outcomeIndex: Int!
+  orderHash: Bytes!
+  "Owner (Safe proxy wallet) of the order that was filled."
+  account: Account!
+  "Counterparty; equals the exchange address on the taker-order fill."
+  counterparty: Bytes!
+  isTakerFill: Boolean!
+  side: TradeSide!                  # from the order owner's perspective
+  shares: BigDecimal!
+  collateral: BigDecimal!           # USDT paid (BUY) or received (SELL)
+  price: BigDecimal!                # USDT per share for tokenId
+  fee: BigInt!                      # raw fee as emitted by the exchange
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+type Account @entity(immutable: false) {
+  id: Bytes!                        # wallet (usually a Safe proxy)
+  tradeCount: BigInt!
+  volume: BigDecimal!               # USDT across all of this account's own fills
+  realizedPnl: BigDecimal!
+  firstTradeTimestamp: BigInt!
+  lastTradeTimestamp: BigInt!
+  positions: [Position!]! @derivedFrom(field: "account")
+}
+
+"Per-account, per-outcome-token position with weighted-average cost basis."
+type Position @entity(immutable: false) {
+  id: Bytes!                        # account ++ tokenId
+  account: Account!
+  market: Market!
+  tokenId: BigInt!
+  outcomeIndex: Int!
+  "Net shares held according to trades, splits, merges and redemptions (raw, 18 dp). ERC1155 transfers are not tracked."
+  amountRaw: BigInt!
+  amount: BigDecimal!
+  avgPrice: BigDecimal!
+  totalBought: BigDecimal!
+  totalSold: BigDecimal!
+  realizedPnl: BigDecimal!
+  lastUpdatedTimestamp: BigInt!
+}
+
+enum CollateralAction {
+  SPLIT
+  MERGE
+  REDEMPTION
+}
+
+"Split / merge / redemption of USDT collateral on OPINION's ConditionalTokens."
+type CollateralEvent @entity(immutable: true) {
+  id: Bytes!
+  action: CollateralAction!
+  market: Market!
+  stakeholder: Bytes!
+  "True when the exchange itself split/merged to settle a mint/merge match."
+  viaExchange: Boolean!
+  amount: BigDecimal!               # USDT (split/merge amount, or redemption payout)
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+# ---------- timeseries + aggregations (daily/hourly stats, no hot singletons) ----------
+
+type GlobalDataPoint @entity(timeseries: true) {
+  id: Int8!
+  timestamp: Timestamp!
+  volume: BigDecimal!
+  trades: Int!
+  fees: BigDecimal!
+  openInterestDelta: BigDecimal!
+  marketsCreated: Int!
+}
+
+type GlobalStat @aggregation(intervals: ["hour", "day"], source: "GlobalDataPoint") {
+  id: Int8!
+  timestamp: Timestamp!
+  volume: BigDecimal! @aggregate(fn: "sum", arg: "volume")
+  trades: Int! @aggregate(fn: "sum", arg: "trades")
+  fees: BigDecimal! @aggregate(fn: "sum", arg: "fees")
+  openInterestChange: BigDecimal! @aggregate(fn: "sum", arg: "openInterestDelta")
+  openInterest: BigDecimal! @aggregate(fn: "sum", arg: "openInterestDelta", cumulative: true)
+  marketsCreated: Int! @aggregate(fn: "sum", arg: "marketsCreated")
+  totalMarkets: Int! @aggregate(fn: "sum", arg: "marketsCreated", cumulative: true)
+  totalVolume: BigDecimal! @aggregate(fn: "sum", arg: "volume", cumulative: true)
+}
+
+type MarketTradePoint @entity(timeseries: true) {
+  id: Int8!
+  timestamp: Timestamp!
+  market: Market!
+  volume: BigDecimal!
+  shares: BigDecimal!
+  yesPrice: BigDecimal!
+}
+
+type MarketStat @aggregation(intervals: ["hour", "day"], source: "MarketTradePoint") {
+  id: Int8!
+  timestamp: Timestamp!
+  market: Market!
+  volume: BigDecimal! @aggregate(fn: "sum", arg: "volume")
+  shares: BigDecimal! @aggregate(fn: "sum", arg: "shares")
+  trades: Int8! @aggregate(fn: "count")
+  openYesPrice: BigDecimal! @aggregate(fn: "first", arg: "yesPrice")
+  closeYesPrice: BigDecimal! @aggregate(fn: "last", arg: "yesPrice")
+  highYesPrice: BigDecimal! @aggregate(fn: "max", arg: "yesPrice")
+  lowYesPrice: BigDecimal! @aggregate(fn: "min", arg: "yesPrice")
+}

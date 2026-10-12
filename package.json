@@ -1,0 +1,16 @@
+{
+  "name": "opinion-subgraph",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OPINION (opinion.trade) prediction market on BNB Chain: markets, trades, positions & PnL, open interest, daily stats",
+  "license": "MIT",
+  "scripts": {
+    "codegen": "graph codegen",
+    "build": "graph build",
+    "deploy": "graph deploy opinion-bnb --version-label v0.1.0"
+  },
+  "devDependencies": {
+    "@graphprotocol/graph-cli": "0.98.1",
+    "@graphprotocol/graph-ts": "0.38.2"
+  }
+}
