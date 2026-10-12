@@ -140,6 +140,7 @@ export function globalPoint(): GlobalDataPoint {
   g.volume = BD_ZERO
   g.trades = 0
   g.fees = BD_ZERO
+  g.treasuryFees = BD_ZERO
   g.openInterestDelta = BD_ZERO
   g.marketsCreated = 0
   return g

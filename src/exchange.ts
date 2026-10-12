@@ -54,7 +54,17 @@ export function handleOrderFilled(event: OrderFilled): void {
 
   let collateral = toDec(collateralRaw)
   let shares = toDec(sharesRaw)
-  let price = collateralRaw.toBigDecimal().div(sharesRaw.toBigDecimal())
+  // OPINION charges the fee in USDT on the taker-order fill. On a BUY the order owner
+  // pays makerAmountFilled *including* the fee; on a SELL it receives
+  // takerAmountFilled *minus* the fee (verified against USDT transfers on-chain).
+  let feeRaw = p.fee.gt(collateralRaw) ? collateralRaw : p.fee
+  let sharesBD = sharesRaw.toBigDecimal()
+  let netCollateralRaw = collateralRaw.minus(feeRaw)
+  // execution price (fee excluded) => always in [0, 1]
+  let price = netCollateralRaw.toBigDecimal().div(sharesBD)
+  if (!isBuy) price = collateralRaw.toBigDecimal().div(sharesBD)
+  // effective price for the owner's cost basis / proceeds (fee included)
+  let effPrice = isBuy ? collateralRaw.toBigDecimal().div(sharesBD) : netCollateralRaw.toBigDecimal().div(sharesBD)
   let isTakerFill = p.taker.equals(EXCHANGE)
 
   let t = new Trade(event.transaction.hash.concatI32(event.logIndex.toI32()))
@@ -70,6 +80,8 @@ export function handleOrderFilled(event: OrderFilled): void {
   t.collateral = collateral
   t.price = price
   t.fee = p.fee
+  t.feeAmount = toDec(p.fee)
+  t.effectivePrice = effPrice
   t.timestamp = ts
   t.blockNumber = event.block.number
   t.transactionHash = event.transaction.hash
@@ -79,9 +91,9 @@ export function handleOrderFilled(event: OrderFilled): void {
   let account = getAccount(p.maker, ts)
   let pos = getPosition(p.maker, marketId, tokenId, outcomeIndex)
   if (isBuy) {
-    positionBuy(pos, sharesRaw, price, ts)
+    positionBuy(pos, sharesRaw, effPrice, ts)
   } else {
-    let pnl = positionSell(pos, sharesRaw, price, ts)
+    let pnl = positionSell(pos, sharesRaw, effPrice, ts)
     account.realizedPnl = account.realizedPnl.plus(pnl)
   }
   pos.save()
@@ -90,7 +102,16 @@ export function handleOrderFilled(event: OrderFilled): void {
   account.lastTradeTimestamp = ts
   account.save()
 
-  if (isTakerFill) return
+  if (isTakerFill) {
+    // total fees = OrderFilled.fee (FeeCharged only carries the treasury share;
+    // the rest is paid out to a second recipient in the same tx)
+    if (p.fee.gt(BI_ZERO)) {
+      let gf = globalPoint()
+      gf.fees = toDec(p.fee)
+      gf.save()
+    }
+    return
+  }
 
   // market stats: maker-order fills only => each match counted once
   let m = Market.load(marketId)!
@@ -119,6 +140,6 @@ export function handleOrderFilled(event: OrderFilled): void {
 export function handleFeeCharged(event: FeeCharged): void {
   if (!event.params.tokenId.equals(BI_ZERO)) return
   let g = globalPoint()
-  g.fees = toDec(event.params.amount)
+  g.treasuryFees = toDec(event.params.amount)
   g.save()
 }
