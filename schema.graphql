@@ -54,8 +54,12 @@ type Trade @entity(immutable: true) {
   side: TradeSide!                  # from the order owner's perspective
   shares: BigDecimal!
   collateral: BigDecimal!           # USDT paid (BUY) or received (SELL)
-  price: BigDecimal!                # USDT per share for tokenId
-  fee: BigInt!                      # raw fee as emitted by the exchange
+  "Execution price, USDT per share, fee excluded (0..1)."
+  price: BigDecimal!
+  "Owner's all-in price: BUY = (shares cost + fee) / shares, SELL = (proceeds - fee) / shares. Used for Position cost basis / PnL."
+  effectivePrice: BigDecimal!
+  fee: BigInt!                      # raw fee as emitted by the exchange (USDT, 18 dp)
+  feeAmount: BigDecimal!            # fee in USDT
   timestamp: BigInt!
   blockNumber: BigInt!
   transactionHash: Bytes!
@@ -121,6 +125,7 @@ type GlobalDataPoint @entity(timeseries: true) {
   volume: BigDecimal!
   trades: Int!
   fees: BigDecimal!
+  treasuryFees: BigDecimal!
   openInterestDelta: BigDecimal!
   marketsCreated: Int!
 }
@@ -130,7 +135,10 @@ type GlobalStat @aggregation(intervals: ["hour", "day"], source: "GlobalDataPoin
   timestamp: Timestamp!
   volume: BigDecimal! @aggregate(fn: "sum", arg: "volume")
   trades: Int! @aggregate(fn: "sum", arg: "trades")
+  "All trading fees (sum of OrderFilled.fee)."
   fees: BigDecimal! @aggregate(fn: "sum", arg: "fees")
+  "Treasury share of fees (FeeCharged)."
+  treasuryFees: BigDecimal! @aggregate(fn: "sum", arg: "treasuryFees")
   openInterestChange: BigDecimal! @aggregate(fn: "sum", arg: "openInterestDelta")
   openInterest: BigDecimal! @aggregate(fn: "sum", arg: "openInterestDelta", cumulative: true)
   marketsCreated: Int! @aggregate(fn: "sum", arg: "marketsCreated")
