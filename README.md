@@ -26,11 +26,11 @@ The exchange is the only ERC1155 operator seen on the CTF, and OPINION has no Ne
 |---|---|
 | `Market` | One CTF condition: question id, oracle, YES/NO outcome token ids (YES = outcome index 0), resolution payouts, matched volume, trade count, open interest, and the last YES price |
 | `OutcomeToken` | Maps an ERC1155 token id to its market and outcome index |
-| `Trade` | Every `OrderFilled`, from the order owner's perspective: side, shares, USDT, price, and fee |
+| `Trade` | Every `OrderFilled`, from the order owner's perspective: side, shares, USDT, fee-excluded `price`, all-in `effectivePrice`, and `fee`/`feeAmount` |
 | `Account` | A wallet (usually a Safe proxy) with trade count, volume, and realized PnL |
 | `Position` | Account × outcome token: net shares, weighted-average cost, totals bought and sold, and realized PnL |
 | `CollateralEvent` | USDT split, merge, or redemption (`viaExchange` marks mint/merge matches done by the exchange) |
-| `GlobalStat` (hour/day) | Volume, trades, USDT fees, open interest (cumulative), markets created, and total volume |
+| `GlobalStat` (hour/day) | Volume, trades, all fees + treasury fees, open interest (cumulative), markets created, and total volume |
 | `MarketStat` (hour/day) | Per-market volume, shares, trades, and YES-price OHLC |
 
 ### Methodology
@@ -39,7 +39,7 @@ The exchange is the only ERC1155 operator seen on the CTF, and OPINION has no Ne
 - **Volume** (market and global) counts maker-order fills only, so each matched pair is counted once. `Account.volume` is the USDT that account itself paid or received.
 - **PnL** uses weighted-average cost basis, the same method as `polymarket-v2-subgraphs/pnl`. Sells realize `(price - avgPrice) × shares`, capped at the shares held. Direct user splits and merges count as buying or selling both outcomes at 0.50. Redemptions realize the held shares at `payoutNumerator / payoutDenominator`. Plain ERC1155 transfers between wallets aren't tracked.
 - **Open interest** = USDT split − merged − redeemed on top-level (`parentCollectionId == 0`) USDT positions of OPINION markets.
-- **Fees** come from `FeeCharged` with `tokenId == 0` (USDT paid to the treasury).
+- **Fees.** `Trade.fee` / `feeAmount` come from `OrderFilled.fee` (all trading fees). `price` is fee-excluded (0..1); `effectivePrice` is the owner's all-in price used for cost basis / PnL (BUY adds the fee, SELL subtracts it). Protocol `fees` sum `OrderFilled.fee`; `treasuryFees` sum `FeeCharged` with `tokenId == 0` (treasury share only).
 - `PayoutRedemption(indexed redeemer, indexed collateralToken, indexed parentCollectionId, conditionId, indexSets, payout)`: `conditionId` is **not** indexed. This was checked against the verified ABI.
 - To keep writes low, there's no global singleton. Protocol-wide numbers come from timeseries aggregations, and `TransferSingle`/`TransferBatch` aren't indexed.
 
@@ -53,10 +53,10 @@ The exchange is the only ERC1155 operator seen on the CTF, and OPINION has no Ne
   }
 }
 
-# Daily protocol stats
+# Daily protocol stats (fees = all OrderFilled fees; treasuryFees = FeeCharged share)
 {
   globalStats(interval: "day", first: 30) {
-    timestamp volume trades fees openInterest totalMarkets totalVolume
+    timestamp volume trades fees treasuryFees openInterest totalMarkets totalVolume
   }
 }
 
@@ -75,10 +75,33 @@ The exchange is the only ERC1155 operator seen on the CTF, and OPINION has no Ne
   }
 }
 
-# Latest fills
+# Latest fills (price is fee-excluded; effectivePrice is all-in for PnL)
 {
   trades(first: 20, orderBy: timestamp, orderDirection: desc, where: { isTakerFill: false }) {
-    market { id } account { id } side outcomeIndex shares collateral price transactionHash
+    market { id } account { id } side outcomeIndex shares collateral
+    price effectivePrice feeAmount transactionHash
+  }
+}
+
+# Fee-aware fills (largest fees; taker fills usually carry the fee)
+{
+  trades(first: 20, orderBy: feeAmount, orderDirection: desc, where: { feeAmount_gt: "0" }) {
+    market { id } account { id } side isTakerFill shares collateral
+    price effectivePrice feeAmount
+  }
+}
+
+# Protocol fees vs treasury take, by day
+{
+  globalStats(interval: "day", first: 14, orderBy: timestamp, orderDirection: desc) {
+    timestamp volume fees treasuryFees trades
+  }
+}
+
+# Trades where all-in price differs from execution price (fee impact)
+{
+  trades(first: 20, orderBy: timestamp, orderDirection: desc, where: { feeAmount_gt: "0" }) {
+    side price effectivePrice feeAmount shares collateral transactionHash
   }
 }
 ```
